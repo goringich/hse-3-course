@@ -1,3 +1,4 @@
 optimizations/*.csv
+optimizations/*.clq
 optimizations/*.7z
 **/.git
