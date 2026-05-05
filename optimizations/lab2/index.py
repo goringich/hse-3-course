@@ -1,12 +1,24 @@
 import argparse
 import math
-import os
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional, Tuple
 
-import highspy
+try:
+  import highspy
+except ModuleNotFoundError as exc:
+  print(
+    "Missing dependency: highspy.\n"
+    "Create a virtual environment and install dependencies first:\n"
+    "  python3 -m venv .venv\n"
+    "  .venv/bin/pip install -r requirements.txt\n"
+    "Then run:\n"
+    "  ./run_index2.sh C125.9.clq --timeout 30",
+    file=sys.stderr,
+  )
+  raise SystemExit(1) from exc
 
 
 EPS = 1e-7
@@ -40,6 +52,32 @@ class SolverStats:
   pruned_by_infeasible: int = 0
   integer_solutions: int = 0
   max_depth: int = 0
+
+
+def resolve_graph_path(path_str: str) -> str:
+  path = Path(path_str)
+
+  if path.exists():
+    return str(path)
+
+  candidates = [
+    Path("max_clique_txt") / path_str,
+    Path("max_clique_txt/DIMACS_all_ascii") / path_str,
+    Path("max_clique_txt/BHOSLIB_ascii") / path_str,
+    Path("lab2") / path_str,
+  ]
+
+  for candidate in candidates:
+    if candidate.exists():
+      return str(candidate)
+
+  raise FileNotFoundError(
+    f"graph file not found: {path_str}\n"
+    "Examples:\n"
+    "  C125.9.clq\n"
+    "  lab2/C125.9.clq\n"
+    "  max_clique_txt/DIMACS_all_ascii/C125.9.clq"
+  )
 
 
 def read_dimacs_clq(path: str) -> Graph:
@@ -384,8 +422,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
   args = parse_args()
   start = time.perf_counter()
+  graph_path = resolve_graph_path(args.path)
 
-  graph = read_dimacs_clq(args.path)
+  graph = read_dimacs_clq(graph_path)
   constraints = build_independent_set_constraints(graph)
 
   print(f"loaded graph: n={graph.n}, edges={graph.edges_count}")
@@ -401,7 +440,7 @@ def main() -> None:
   elapsed = time.perf_counter() - start
 
   print_result(
-    path=args.path,
+    path=graph_path,
     graph=graph,
     clique=clique,
     proven_optimal=proven_optimal,

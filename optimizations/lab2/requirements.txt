@@ -1,0 +1,4 @@
+highspy
+ipykernel
+nbconvert
+notebook
