@@ -1,4 +1,4 @@
-# Max Clique Launch Guide
+# Project Launch Guide
 
 ## Setup
 
@@ -6,7 +6,7 @@
 ./setup_env.sh
 ```
 
-## Run `index2.py`
+## Run Lab 2
 
 Short file names work:
 
@@ -21,6 +21,12 @@ Full paths also work:
 ```bash
 ./run_index2.sh max_clique_txt/DIMACS_all_ascii/brock200_1.clq --timeout 30
 ./run_index2.sh max_clique_txt/BHOSLIB_ascii/frb30-15-1.clq --timeout 30
+```
+
+Main solver file:
+
+```bash
+lab2/index.py
 ```
 
 ## Run the notebook

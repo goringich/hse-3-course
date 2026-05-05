@@ -1,4 +1,0 @@
-highspy
-ipykernel
-nbconvert
-notebook
