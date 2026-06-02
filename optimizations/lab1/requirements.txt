@@ -1,0 +1,5 @@
+numpy
+highspy
+ipykernel
+nbconvert
+notebook

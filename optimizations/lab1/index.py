@@ -301,14 +301,24 @@ def _print_solution(sol: GameSolution) -> None:
   print(sol.q)
 
 
-def main() -> None:
+def main(argv: List[str] | None = None) -> None:
   ap = argparse.ArgumentParser()
   ap.add_argument("csv_path")
-  args = ap.parse_args()
+  args = ap.parse_args(argv)
 
   sol = solve_game_from_csv(args.csv_path)
   _print_solution(sol)
 
 
+def notebook_demo(csv_path: str = "A_100.csv") -> None:
+  sol = solve_game_from_csv(csv_path)
+  _print_solution(sol)
+
+
 if __name__ == "__main__":
-  main()
+  try:
+    get_ipython  # type: ignore[name-defined]
+  except NameError:
+    main()
+  else:
+    notebook_demo()
