@@ -1,0 +1,8 @@
+{
+  "chat.tools.terminal.autoApprove": {
+    "/^ls /usr/bin/python\\* 2>/dev/null; pacman -Qs python 2>/dev/null \\| grep \"local\" \\| head -10; pip install jupyter networkx --user --quiet 2>&1 \\| tail -5$/": {
+      "approve": true,
+      "matchCommandLine": true
+    }
+  }
+}

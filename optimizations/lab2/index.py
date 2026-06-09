@@ -1,10 +1,13 @@
 import argparse
+import concurrent.futures
 import math
+import multiprocessing
+import os
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 try:
   import highspy
@@ -32,13 +35,6 @@ class Graph:
 
 
 @dataclass
-class Node:
-  lower: List[float]
-  upper: List[float]
-  depth: int
-
-
-@dataclass
 class LpResult:
   status: str
   objective: float
@@ -52,6 +48,16 @@ class SolverStats:
   pruned_by_infeasible: int = 0
   integer_solutions: int = 0
   max_depth: int = 0
+
+  def add(self, other: "SolverStats") -> None:
+    self.nodes += other.nodes
+    self.pruned_by_bound += other.pruned_by_bound
+    self.pruned_by_infeasible += other.pruned_by_infeasible
+    self.integer_solutions += other.integer_solutions
+    self.max_depth = max(self.max_depth, other.max_depth)
+
+
+Assignment = Tuple[int, int]
 
 
 def resolve_graph_path(path_str: str) -> str:
@@ -191,36 +197,10 @@ def greedy_initial_clique(graph: Graph) -> List[int]:
 
 
 def solve_lp_relaxation(
-  graph: Graph,
-  constraints: List[List[int]],
-  lower: List[float],
-  upper: List[float],
-  simplex: bool,
+  solver: highspy.Highs,
 ) -> LpResult:
-  h = highspy.Highs()
-  h.setOptionValue("output_flag", False)
-
-  if simplex:
-    h.setOptionValue("solver", "simplex")
-
-  h.addVars(graph.n, lower, upper)
-  h.changeObjectiveSense(highspy.ObjSense.kMaximize)
-  h.changeColsCost(graph.n, list(range(graph.n)), [1.0] * graph.n)
-
-  inf = highspy.kHighsInf
-
-  for group in constraints:
-    h.addRow(
-      -inf,
-      1.0,
-      len(group),
-      group,
-      [1.0] * len(group),
-    )
-
-  h.run()
-
-  status = h.modelStatusToString(h.getModelStatus())
+  solver.run()
+  status = solver.modelStatusToString(solver.getModelStatus())
 
   if "Infeasible" in status:
     return LpResult(status=status, objective=-math.inf, values=[])
@@ -228,11 +208,94 @@ def solve_lp_relaxation(
   if "Optimal" not in status:
     return LpResult(status=status, objective=-math.inf, values=[])
 
-  solution = h.getSolution()
+  solution = solver.getSolution()
   values = list(solution.col_value)
-  objective = float(h.getObjectiveValue())
+  objective = float(solver.getObjectiveValue())
 
   return LpResult(status=status, objective=objective, values=values)
+
+
+def build_solver(
+  graph: Graph,
+  constraints: List[List[int]],
+  simplex: bool,
+  threads: int,
+) -> highspy.Highs:
+  solver = highspy.Highs()
+  solver.setOptionValue("output_flag", False)
+
+  if simplex:
+    solver.setOptionValue("solver", "simplex")
+
+  if threads > 0:
+    solver.setOptionValue("threads", threads)
+
+  lower = [0.0] * graph.n
+  upper = [1.0] * graph.n
+  indices = list(range(graph.n))
+  costs = [1.0] * graph.n
+  inf = highspy.kHighsInf
+
+  solver.addVars(graph.n, lower, upper)
+  solver.changeObjectiveSense(highspy.ObjSense.kMaximize)
+  solver.changeColsCost(graph.n, indices, costs)
+
+  for group in constraints:
+    solver.addRow(
+      -inf,
+      1.0,
+      len(group),
+      group,
+      [1.0] * len(group),
+    )
+
+  return solver
+
+
+def apply_assignments(
+  solver: highspy.Highs,
+  assignments: Sequence[Assignment],
+) -> None:
+  for var, value in assignments:
+    bound = float(value)
+    solver.changeColBounds(var, bound, bound)
+
+
+def evaluate_current_node(
+  graph: Graph,
+  solver: highspy.Highs,
+  best_size: int,
+  stats: SolverStats,
+  depth: int,
+) -> Tuple[Optional[List[int]], Optional[int]]:
+  stats.nodes += 1
+  stats.max_depth = max(stats.max_depth, depth)
+
+  lp = solve_lp_relaxation(solver=solver)
+
+  if not lp.values:
+    stats.pruned_by_infeasible += 1
+    return None, None
+
+  upper_bound = math.floor(lp.objective + EPS)
+
+  if upper_bound <= best_size:
+    stats.pruned_by_bound += 1
+    return None, None
+
+  rounded = get_integral_solution(lp.values)
+
+  if rounded is not None:
+    clique = [i for i, value in enumerate(rounded) if value == 1]
+
+    if is_clique(graph, clique):
+      stats.integer_solutions += 1
+      return clique, None
+
+    return [], None
+
+  branch_var = choose_branch_variable(lp.values)
+  return None, branch_var
 
 
 def branch_and_bound(
@@ -240,82 +303,237 @@ def branch_and_bound(
   constraints: List[List[int]],
   timeout_sec: float,
   simplex: bool,
+  threads: int,
+  initial_assignments: Sequence[Assignment] = (),
+  initial_best_clique: Optional[List[int]] = None,
+  start_depth: int = 0,
+  deadline: Optional[float] = None,
 ) -> Tuple[List[int], bool, SolverStats]:
   start_time = time.perf_counter()
+  effective_deadline = deadline if deadline is not None else start_time + timeout_sec
   stats = SolverStats()
-
-  best_clique = greedy_initial_clique(graph)
+  best_clique = sorted(initial_best_clique) if initial_best_clique is not None else greedy_initial_clique(graph)
   best_size = len(best_clique)
-
-  root = Node(
-    lower=[0.0] * graph.n,
-    upper=[1.0] * graph.n,
-    depth=0,
+  solver = build_solver(
+    graph=graph,
+    constraints=constraints,
+    simplex=simplex,
+    threads=threads,
   )
-
-  stack = [root]
+  apply_assignments(solver, initial_assignments)
   proven_optimal = True
 
-  while stack:
-    if time.perf_counter() - start_time >= timeout_sec:
+  def dfs(depth: int) -> None:
+    nonlocal best_clique, best_size, proven_optimal
+
+    if time.perf_counter() >= effective_deadline:
       proven_optimal = False
-      break
+      return
 
-    node = stack.pop()
-    stats.nodes += 1
-    stats.max_depth = max(stats.max_depth, node.depth)
-
-    lp = solve_lp_relaxation(
+    clique, branch_var = evaluate_current_node(
       graph=graph,
-      constraints=constraints,
-      lower=node.lower,
-      upper=node.upper,
-      simplex=simplex,
+      solver=solver,
+      best_size=best_size,
+      stats=stats,
+      depth=depth,
     )
 
-    if not lp.values:
-      stats.pruned_by_infeasible += 1
-      continue
+    if clique == []:
+      return
 
-    upper_bound = math.floor(lp.objective + EPS)
-
-    if upper_bound <= best_size:
-      stats.pruned_by_bound += 1
-      continue
-
-    rounded = get_integral_solution(lp.values)
-
-    if rounded is not None:
-      clique = [i for i, value in enumerate(rounded) if value == 1]
-
-      if is_clique(graph, clique):
-        stats.integer_solutions += 1
-
-        if len(clique) > best_size:
-          best_clique = clique
-          best_size = len(clique)
-
-      continue
-
-    branch_var = choose_branch_variable(lp.values)
+    if clique is not None:
+      if len(clique) > best_size:
+        best_clique = clique
+        best_size = len(clique)
+      return
 
     if branch_var is None:
-      continue
+      return
 
-    left_lower = node.lower.copy()
-    left_upper = node.upper.copy()
-    left_lower[branch_var] = 1.0
-    left_upper[branch_var] = 1.0
+    parent_basis = solver.getBasis()
 
-    right_lower = node.lower.copy()
-    right_upper = node.upper.copy()
-    right_lower[branch_var] = 0.0
-    right_upper[branch_var] = 0.0
+    solver.changeColBounds(branch_var, 1.0, 1.0)
+    dfs(depth + 1)
 
-    stack.append(Node(lower=right_lower, upper=right_upper, depth=node.depth + 1))
-    stack.append(Node(lower=left_lower, upper=left_upper, depth=node.depth + 1))
+    if not proven_optimal:
+      solver.changeColBounds(branch_var, 0.0, 1.0)
+      return
+
+    solver.changeColBounds(branch_var, 0.0, 1.0)
+    solver.setBasis(parent_basis)
+    solver.changeColBounds(branch_var, 0.0, 0.0)
+    dfs(depth + 1)
+    solver.changeColBounds(branch_var, 0.0, 1.0)
+    solver.setBasis(parent_basis)
+
+  dfs(start_depth)
 
   return sorted(best_clique), proven_optimal, stats
+
+
+def split_subproblems(
+  graph: Graph,
+  constraints: List[List[int]],
+  timeout_sec: float,
+  simplex: bool,
+  threads: int,
+  split_depth: int,
+  initial_best_clique: List[int],
+) -> Tuple[List[Tuple[Assignment, ...]], List[int], bool, SolverStats]:
+  start_time = time.perf_counter()
+  deadline = start_time + timeout_sec
+  stats = SolverStats()
+  best_clique = sorted(initial_best_clique)
+  best_size = len(best_clique)
+  tasks: List[Tuple[Assignment, ...]] = []
+  solver = build_solver(
+    graph=graph,
+    constraints=constraints,
+    simplex=simplex,
+    threads=threads,
+  )
+  proven_optimal = True
+
+  def dfs(depth: int, assignments: List[Assignment]) -> None:
+    nonlocal best_clique, best_size, proven_optimal
+
+    if time.perf_counter() >= deadline:
+      proven_optimal = False
+      return
+
+    clique, branch_var = evaluate_current_node(
+      graph=graph,
+      solver=solver,
+      best_size=best_size,
+      stats=stats,
+      depth=depth,
+    )
+
+    if clique == []:
+      return
+
+    if clique is not None:
+      if len(clique) > best_size:
+        best_clique = clique
+        best_size = len(clique)
+      return
+
+    if branch_var is None:
+      return
+
+    if depth >= split_depth:
+      tasks.append(tuple(assignments))
+      return
+
+    parent_basis = solver.getBasis()
+
+    assignments.append((branch_var, 1))
+    solver.changeColBounds(branch_var, 1.0, 1.0)
+    dfs(depth + 1, assignments)
+    solver.changeColBounds(branch_var, 0.0, 1.0)
+    solver.setBasis(parent_basis)
+    assignments.pop()
+
+    if not proven_optimal:
+      return
+
+    assignments.append((branch_var, 0))
+    solver.changeColBounds(branch_var, 0.0, 0.0)
+    dfs(depth + 1, assignments)
+    solver.changeColBounds(branch_var, 0.0, 1.0)
+    solver.setBasis(parent_basis)
+    assignments.pop()
+
+  dfs(0, [])
+  return tasks, sorted(best_clique), proven_optimal, stats
+
+
+def solve_subproblem(
+  graph: Graph,
+  constraints: List[List[int]],
+  timeout_sec: float,
+  simplex: bool,
+  threads: int,
+  assignments: Sequence[Assignment],
+  initial_best_clique: List[int],
+  start_depth: int,
+  deadline: float,
+) -> Tuple[List[int], bool, SolverStats]:
+  remaining = max(0.0, deadline - time.perf_counter())
+  return branch_and_bound(
+    graph=graph,
+    constraints=constraints,
+    timeout_sec=remaining if remaining > 0 else 0.0,
+    simplex=simplex,
+    threads=threads,
+    initial_assignments=assignments,
+    initial_best_clique=initial_best_clique,
+    start_depth=start_depth,
+    deadline=deadline,
+  )
+
+
+def parallel_branch_and_bound(
+  graph: Graph,
+  constraints: List[List[int]],
+  timeout_sec: float,
+  simplex: bool,
+  total_threads: int,
+  workers: int,
+) -> Tuple[List[int], bool, SolverStats, int]:
+  best_clique = greedy_initial_clique(graph)
+  split_depth = max(1, math.ceil(math.log2(max(2, workers))))
+  solver_threads = max(1, total_threads // workers)
+  split_threads = max(1, total_threads // max(1, workers))
+  deadline = time.perf_counter() + timeout_sec
+
+  tasks, best_clique, split_optimal, split_stats = split_subproblems(
+    graph=graph,
+    constraints=constraints,
+    timeout_sec=timeout_sec,
+    simplex=simplex,
+    threads=split_threads,
+    split_depth=split_depth,
+    initial_best_clique=best_clique,
+  )
+
+  if not tasks or not split_optimal:
+    return best_clique, split_optimal and not tasks, split_stats, solver_threads
+
+  stats = SolverStats()
+  stats.add(split_stats)
+  overall_optimal = True
+  max_workers = min(workers, len(tasks))
+
+  with concurrent.futures.ProcessPoolExecutor(
+    max_workers=max_workers,
+    mp_context=multiprocessing.get_context("fork"),
+  ) as executor:
+    futures = [
+      executor.submit(
+        solve_subproblem,
+        graph,
+        constraints,
+        timeout_sec,
+        simplex,
+        solver_threads,
+        assignments,
+        best_clique,
+        len(assignments),
+        deadline,
+      )
+      for assignments in tasks
+    ]
+
+    for future in concurrent.futures.as_completed(futures):
+      clique, proven_optimal, worker_stats = future.result()
+      stats.add(worker_stats)
+      overall_optimal = overall_optimal and proven_optimal
+
+      if len(clique) > len(best_clique):
+        best_clique = clique
+
+  return sorted(best_clique), overall_optimal, stats, solver_threads
 
 
 def get_integral_solution(values: List[float]) -> Optional[List[int]]:
@@ -416,28 +634,63 @@ def parse_args() -> argparse.Namespace:
     help="do not force simplex solver",
   )
 
+  parser.add_argument(
+    "--threads",
+    type=int,
+    default=0,
+    help="total CPU core budget to use (0 = all available cores)",
+  )
+
+  parser.add_argument(
+    "--workers",
+    type=int,
+    default=0,
+    help="number of branch-and-bound worker processes (0 = automatic)",
+  )
+
   return parser.parse_args()
 
 
 def main() -> None:
   args = parse_args()
-  start = time.perf_counter()
+  total_start = time.perf_counter()
   graph_path = resolve_graph_path(args.path)
+  total_core_budget = args.threads if args.threads > 0 else max(1, os.cpu_count() or 1)
+  effective_workers = args.workers if args.workers > 0 else total_core_budget
 
+  preprocess_start = time.perf_counter()
   graph = read_dimacs_clq(graph_path)
   constraints = build_independent_set_constraints(graph)
+  preprocess_elapsed = time.perf_counter() - preprocess_start
 
   print(f"loaded graph: n={graph.n}, edges={graph.edges_count}")
   print(f"independent-set constraints: {len(constraints)}")
+  print(f"workers: {effective_workers}")
+  print(f"preprocess_sec: {preprocess_elapsed:.3f}")
 
-  clique, proven_optimal, stats = branch_and_bound(
-    graph=graph,
-    constraints=constraints,
-    timeout_sec=args.timeout,
-    simplex=not args.no_simplex,
-  )
+  search_start = time.perf_counter()
+  if effective_workers > 1:
+    clique, proven_optimal, stats, effective_highs_threads = parallel_branch_and_bound(
+      graph=graph,
+      constraints=constraints,
+      timeout_sec=args.timeout,
+      simplex=not args.no_simplex,
+      total_threads=total_core_budget,
+      workers=effective_workers,
+    )
+  else:
+    effective_highs_threads = total_core_budget
+    clique, proven_optimal, stats = branch_and_bound(
+      graph=graph,
+      constraints=constraints,
+      timeout_sec=args.timeout,
+      simplex=not args.no_simplex,
+      threads=effective_highs_threads,
+    )
+  search_elapsed = time.perf_counter() - search_start
+  print(f"highs_threads_per_worker: {effective_highs_threads}")
 
-  elapsed = time.perf_counter() - start
+  elapsed = time.perf_counter() - total_start
 
   print_result(
     path=graph_path,
@@ -447,6 +700,7 @@ def main() -> None:
     stats=stats,
     elapsed=elapsed,
   )
+  print(f"search_sec: {search_elapsed:.3f}")
 
   if not is_clique(graph, clique):
     sys.exit(2)
