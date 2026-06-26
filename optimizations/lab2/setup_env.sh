@@ -9,5 +9,6 @@ python3 -m venv .venv
 
 echo "Environment is ready."
 echo "Run examples:"
-echo "  ./.venv/bin/python index.py C125.9.clq --timeout 30"
-echo "  ./run_index2.sh johnson8-2-4.clq"
+echo "  ./lab2-test C125.9.clq"
+echo "  ./lab2-test --preset heavy --timeout 60"
+echo "  ./run_index2.sh johnson8-2-4.clq --timeout 30 --threads 32 --workers 32"
