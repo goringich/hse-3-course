@@ -62,9 +62,14 @@ def validate_schema(train: pd.DataFrame, test: pd.DataFrame) -> None:
 
 
 def split_columns(X: pd.DataFrame) -> tuple[list[str], list[str]]:
-  categorical = X.select_dtypes(
-    include=["object", "category", "bool"]
-  ).columns.tolist()
+  categorical = [
+    column
+    for column in X.columns
+    if (
+      not pd.api.types.is_numeric_dtype(X[column])
+      or pd.api.types.is_bool_dtype(X[column])
+    )
+  ]
   numeric = [column for column in X.columns if column not in categorical]
   return numeric, categorical
 
