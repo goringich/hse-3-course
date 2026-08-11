@@ -22,16 +22,19 @@ By default it prints only definitions. To include forward declarations too, pass
 
 ## Build
 
+From the repository root:
+
 ```bash
-cd /home/goringich/Desktop/hse/compilers/clang-ast-plugin-lab1
+cd compilers/clang-ast-plugin-lab1
 cmake -S . -B build -G Ninja
 cmake --build build
 ```
 
+If you are already in `compilers/clang-ast-plugin-lab1`, omit the `cd` command.
+
 ## Run on the example file
 
 ```bash
-cd /home/goringich/Desktop/hse/compilers/clang-ast-plugin-lab1
 clang++ -fsyntax-only \
   -Xclang -load -Xclang ./build/FunctionInfoPlugin.so \
   -Xclang -plugin -Xclang function-info \
@@ -41,7 +44,6 @@ clang++ -fsyntax-only \
 ## Run with declarations included
 
 ```bash
-cd /home/goringich/Desktop/hse/compilers/clang-ast-plugin-lab1
 clang++ -fsyntax-only \
   -Xclang -load -Xclang ./build/FunctionInfoPlugin.so \
   -Xclang -plugin -Xclang function-info \
