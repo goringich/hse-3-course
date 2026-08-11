@@ -1,5 +1,7 @@
 # Project Launch Guide
 
+Run these commands from the `optimizations` directory unless a section says otherwise.
+
 ## Setup
 
 ```bash
@@ -23,16 +25,16 @@ may point to the ESP-IDF environment.
 Short file names work:
 
 ```bash
-./run_index2.sh C125.9.clq --timeout 30
-./run_index2.sh johnson8-2-4.clq
-./run_index2.sh hamming6-2.clq
+./lab2/run_index2.sh C125.9.clq --timeout 30
+./lab2/run_index2.sh johnson8-2-4.clq
+./lab2/run_index2.sh hamming6-2.clq
 ```
 
-Full paths also work:
+Full paths relative to `lab2` also work:
 
 ```bash
-./run_index2.sh max_clique_txt/DIMACS_all_ascii/brock200_1.clq --timeout 30
-./run_index2.sh max_clique_txt/BHOSLIB_ascii/frb30-15-1.clq --timeout 30
+./lab2/run_index2.sh max_clique_txt/DIMACS_all_ascii/brock200_1.clq --timeout 30
+./lab2/run_index2.sh max_clique_txt/BHOSLIB_ascii/frb30-15-1.clq --timeout 30
 ```
 
 Main solver file:
