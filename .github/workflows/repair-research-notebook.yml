@@ -1,0 +1,67 @@
+name: Repair research notebook
+
+on:
+  push:
+    branches:
+      - finish/course-project-cleanup-20260812
+    paths:
+      - ".github/workflows/repair-research-notebook.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: finish/course-project-cleanup-20260812
+
+      - name: Repair exactly one malformed cell
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("Research Seminar/Mathematical-modeling-of-stock-markets/lab2/Vlasov_kim_23CST6_India_2023_hw2.ipynb")
+          text = path.read_text(encoding="utf-8")
+          old = '"n = len(mu)pd.DataFrame({\\n",'
+          new = '"weights_short_df = pd.DataFrame({\\n",'
+
+          if text.count(old) != 1:
+            raise SystemExit(f"expected exactly one malformed source line, got {text.count(old)}")
+
+          updated = text.replace(old, new, 1)
+          notebook = json.loads(updated)
+          cell = next(
+            cell
+            for cell in notebook["cells"]
+            if cell.get("id") == "01869c52"
+          )
+          source = "".join(cell["source"])
+
+          if "n = len(mu)pd.DataFrame" in source:
+            raise SystemExit("malformed expression is still present")
+          if "weights_short_df = pd.DataFrame({" not in source:
+            raise SystemExit("expected assignment is missing")
+
+          compile(source, str(path), "exec")
+          path.write_text(updated, encoding="utf-8")
+          PY
+
+      - name: Verify minimal diff
+        run: |
+          git diff --check
+          test "$(git diff --numstat -- 'Research Seminar/Mathematical-modeling-of-stock-markets/lab2/Vlasov_kim_23CST6_India_2023_hw2.ipynb')" = $'1\t1\tResearch Seminar/Mathematical-modeling-of-stock-markets/lab2/Vlasov_kim_23CST6_India_2023_hw2.ipynb'
+
+      - name: Commit repair
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- "Research Seminar/Mathematical-modeling-of-stock-markets/lab2/Vlasov_kim_23CST6_India_2023_hw2.ipynb"
+          git commit -m "repair malformed research seminar notebook cell"
+          git push origin HEAD:finish/course-project-cleanup-20260812
