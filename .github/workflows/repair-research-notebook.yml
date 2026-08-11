@@ -1,0 +1,94 @@
+name: Repair research notebook
+
+on:
+  push:
+    branches:
+      - finish/course-project-cleanup-20260812
+    paths:
+      - ".github/workflows/repair-research-notebook.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: finish/course-project-cleanup-20260812
+
+      - name: Restore corrupted cell from pre-regression content
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("Research Seminar/Mathematical-modeling-of-stock-markets/lab2/Vlasov_kim_23CST6_India_2023_hw2.ipynb")
+          text = path.read_text(encoding="utf-8")
+          notebook = json.loads(text)
+          target_id = "01869c52"
+          intended_source = [
+            "weights_short_df = pd.DataFrame({\n",
+            "    \"Company\": companies,\n",
+            "    \"Weight\": w_market_short\n",
+            "}).sort_values(\"Weight\", ascending=False)\n",
+            "\n",
+            "weights_noshort_df = pd.DataFrame({\n",
+            "    \"Company\": companies,\n",
+            "    \"Weight\": w_market_noshort\n",
+            "}).sort_values(\"Weight\", ascending=False)",
+          ]
+
+          cell = next(
+            cell
+            for cell in notebook["cells"]
+            if cell.get("id") == target_id
+          )
+
+          if cell["source"] == intended_source:
+            raise SystemExit("target cell is already restored")
+
+          if "weights_short_df = df[\"log_return\"]" not in "".join(cell["source"]):
+            raise SystemExit("unexpected target-cell state; refusing broad rewrite")
+
+          cell_marker = f'"id": "{target_id}"'
+          cell_start = text.index(cell_marker)
+          source_marker = '   "source": ['
+          source_start = text.index(source_marker, cell_start) + len(source_marker)
+          source_end = text.index("\n   ]", source_start)
+          serialized_source = "\n" + ",\n".join(
+            "    " + json.dumps(line, ensure_ascii=False)
+            for line in intended_source
+          )
+          updated = text[:source_start] + serialized_source + text[source_end:]
+
+          repaired = json.loads(updated)
+          repaired_cell = next(
+            cell
+            for cell in repaired["cells"]
+            if cell.get("id") == target_id
+          )
+          if repaired_cell["source"] != intended_source:
+            raise SystemExit("restored source does not match the pre-regression cell")
+
+          compile("".join(repaired_cell["source"]), str(path), "exec")
+          path.write_text(updated, encoding="utf-8")
+          PY
+
+      - name: Verify scoped diff
+        run: |
+          git diff --check
+          test "$(git diff --name-only | wc -l)" -eq 1
+          test "$(git diff --name-only)" = "Research Seminar/Mathematical-modeling-of-stock-markets/lab2/Vlasov_kim_23CST6_India_2023_hw2.ipynb"
+
+      - name: Commit repair
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- "Research Seminar/Mathematical-modeling-of-stock-markets/lab2/Vlasov_kim_23CST6_India_2023_hw2.ipynb"
+          git commit -m "restore research notebook cell before regression"
+          git push origin HEAD:finish/course-project-cleanup-20260812

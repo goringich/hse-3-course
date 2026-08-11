@@ -1,0 +1,52 @@
+name: ML exam validation
+
+on:
+  pull_request:
+    paths:
+      - "ml-exam/**"
+      - ".github/workflows/ml-exam.yml"
+  push:
+    branches:
+      - master
+    paths:
+      - "ml-exam/**"
+      - ".github/workflows/ml-exam.yml"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ml-exam/requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r ml-exam/requirements.txt
+
+      - name: Run bank marketing pipeline
+        run: python ml-exam/train.py
+
+      - name: Validate generated outputs
+        run: |
+          test -s ml-exam/submission.csv
+          test -s ml-exam/submission_probabilities.csv
+          python - <<'PY'
+          import pandas as pd
+
+          labels = pd.read_csv("ml-exam/submission.csv")
+          probabilities = pd.read_csv("ml-exam/submission_probabilities.csv")
+
+          assert list(labels.columns) == ["y"]
+          assert set(labels["y"].unique()).issubset({"yes", "no"})
+          assert len(labels) == len(probabilities)
+          assert probabilities["y_probability"].between(0, 1).all()
+          print(f"validated {len(labels)} predictions")
+          PY
